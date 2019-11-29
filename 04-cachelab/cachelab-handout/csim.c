@@ -124,7 +124,9 @@ int main(int argc, char* argv[])
 	printf("\n");
       }
     }
-
+    free(valid);
+    free(tag);
+    free(used_tick);
     printSummary(hits, misses, evictions);
     return 0;
 }
