@@ -338,7 +338,6 @@ void do_bgfg(char **argv)
  */
 void waitfg(pid_t pid)
 {
-    int status;
     fg_pid = pid;
     while(fg_pid) sleep(0.01);
     return;
