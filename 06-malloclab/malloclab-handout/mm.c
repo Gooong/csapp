@@ -37,7 +37,7 @@ team_t team = {
 
 #define WSIZE 4
 #define DSIZE 8
-#define CHUNKSIZE (1<<12)
+#define CHUNKSIZE (1<<13)
 #define ALIGNMENT 8
 #define ADDRESSLEN 32
 
@@ -64,7 +64,7 @@ team_t team = {
 #define ESET_PREV_BLK(bp, nbp) (*(unsigned int *)(((char *)(bp) + WSIZE)) = (unsigned int)(nbp)) 
 #define ESET_NEXT_BLK(bp, pbp) (*(unsigned int *)(bp) = (unsigned int)(pbp))
 
-#define DEBUG 1
+//#define DEBUG 1
 
 #ifdef DEBUG
 #define CHECK() mm_checkheap();
@@ -83,6 +83,7 @@ static void *heap_listp, *true_header;
 static inline unsigned int *chain_header(size_t size);
 static inline void remove_from_chain(void * bp);
 static inline void add_to_chain(void * bp);
+static inline void free_block(void * bp);
 static void *coalesce(void *bp);
 static void *extend_heap(size_t words);
 static void *find_fit(size_t size);
@@ -114,7 +115,7 @@ int mm_init(void)
 
     CHECK();
 
-    if (extend_heap(CHUNKSIZE/WSIZE) == NULL)
+    if (extend_heap(CHUNKSIZE/WSIZE + 15) == NULL)
         return -1;
 
     CHECK();
@@ -158,29 +159,28 @@ void *mm_malloc(size_t size)
  */
 void mm_free(void *bp)
 {
-    PRINTF("free: %p\n", bp);
+    PRINTF("\nfree: %p\n", bp);
     CHECK();
-
-    size_t size = GET_SIZE(HDRP(bp));
-    PUT(HDRP(bp), PACK(size, 0));
-    PUT(FTRP(bp), PACK(size, 0));
-    coalesce(bp);
+    free_block(bp);
     CHECK();
 }
 
 /*
  * mm_realloc - return the new address if success, otherwise return NULL.
  */
-void *mm_realloc(void *bp, size_t size)
+static void *best_thru_mm_realloc(void *bp, size_t size)
 {
-    PRINTF("relloc: %p, %d\n", bp, size);
+    PRINTF("\nrelloc: %p, %d\n", bp, size);
     CHECK();
 
-    if (bp == NULL)
+    if (bp == NULL){
+        PRINTF("bp is NULL.\n");
         return mm_malloc(size);
+    }
 
     if (size == 0){
-        mm_free(bp);
+        PRINTF("size is 0.\n");
+        free_block(bp);
         CHECK();
         return NULL;
     }
@@ -225,15 +225,123 @@ void *mm_realloc(void *bp, size_t size)
             final_bp = bp;
         }
         else{
+            unsigned int data_next = (unsigned int)ENEXT_BLKP(bp);
+            unsigned int data_prev = (unsigned int)EPREV_BLKP(bp);
+            free_block(bp);
+
             nbp = find_fit(asize);
             if (nbp == NULL){
                 size_t extendsize = MAX(asize, CHUNKSIZE);
-                if((nbp = extend_heap(extendsize/WSIZE)) == NULL) return NULL;
+                if((nbp = extend_heap(extendsize/WSIZE)) == NULL){
+                    PRINTF("extend failed.\n");
+                    return NULL;
+                }
             }
+            memmove(nbp+DSIZE, bp+DSIZE, origin_size-DSIZE-DSIZE);
             place(nbp, asize);
-            memcpy(nbp, bp, origin_size-2);
-            free(bp);
-            //return nbp;
+            //free_block(bp);
+            ESET_NEXT_BLK(nbp, data_next);
+            ESET_PREV_BLK(nbp, data_prev);
+            // return nbp;
+            final_bp = nbp;
+        }
+    }
+    // 0 -- -(2*DSIZE-1), do nothing.
+    else if(delta >= -(2*DSIZE - 1)){
+        final_bp = bp;
+    }
+    // -2*DSIZE -- .. , just truncate the original block.
+    else{
+        PUT(FTRP(bp), PACK(delta, 0));
+        PUT(HDRP(bp), PACK(asize, 1));
+        PUT(FTRP(bp), PACK(asize, 1));
+        PUT(HDRP(NEXT_BLKP(bp)), PACK(delta, 0));
+        coalesce(NEXT_BLKP(bp));
+        final_bp =  bp;
+    }
+
+    CHECK();
+    return final_bp;
+}
+
+void *mm_realloc(void *bp, size_t size)
+{
+    PRINTF("\nrelloc: %p, %d\n", bp, size);
+    CHECK();
+
+    if (bp == NULL){
+        PRINTF("bp is NULL.\n");
+        return mm_malloc(size);
+    }
+
+    if (size == 0){
+        PRINTF("size is 0.\n");
+        free_block(bp);
+        CHECK();
+        return NULL;
+    }
+
+    void * final_bp;
+    // the adjusted size needed for new block.
+    size_t asize;
+    if(size <= DSIZE)
+        asize = 2*DSIZE;
+    else
+        asize = DSIZE * ((size + (DSIZE) + (DSIZE-1))/DSIZE);
+
+    size_t origin_size = GET_SIZE(HDRP(bp));
+    int delta = asize - origin_size;
+    char *nbp, *pbp;
+
+    // need to expand block
+    if (delta >0){
+
+        unsigned int next_size;
+
+        nbp = (char *)NEXT_BLKP(bp);
+        pbp = (char *)PREV_BLKP(bp);
+        next_size = (unsigned int) GET_SIZE(HDRP(nbp));
+
+        // if the next block is empty block and the total size is enough
+        if ((GET_ALLOC(HDRP(nbp))) && (!GET_ALLOC(HDRP(nbp))) && next_size >= delta){
+            remove_from_chain(nbp);
+            if (next_size - delta >= 2*DSIZE){
+                // truncate next block
+                PUT(HDRP(bp), PACK(asize, 1));
+                PUT(FTRP(bp), PACK(asize, 1));
+                PUT(HDRP(NEXT_BLKP(bp)), PACK(next_size-delta, 0));
+                PUT(FTRP(NEXT_BLKP(bp)), PACK(next_size-delta, 0));
+                coalesce(NEXT_BLKP(bp));
+            }
+            else{
+                // add next block directly
+                asize = origin_size + next_size;
+                PUT(HDRP(bp), PACK(asize, 1));
+                PUT(FTRP(bp), PACK(asize, 1));
+            }
+            //return bp;
+            final_bp = bp;
+        }
+        // find block to fit
+        else{
+            unsigned int data_next = (unsigned int)ENEXT_BLKP(bp);
+            unsigned int data_prev = (unsigned int)EPREV_BLKP(bp);
+            free_block(bp);
+
+            nbp = find_fit(asize);
+            if (nbp == NULL){
+                size_t extendsize = MAX(asize, CHUNKSIZE);
+                if((nbp = extend_heap(extendsize/WSIZE)) == NULL){
+                    PRINTF("extend failed.\n");
+                    return NULL;
+                }
+            }
+            memmove(nbp+DSIZE, bp+DSIZE, origin_size-DSIZE-DSIZE);
+            place(nbp, asize);
+            //free_block(bp);
+            ESET_NEXT_BLK(nbp, data_next);
+            ESET_PREV_BLK(nbp, data_prev);
+            // return nbp;
             final_bp = nbp;
         }
     }
@@ -275,6 +383,12 @@ static inline void add_to_chain(void * bp){
     ESET_NEXT_BLK(headerp, bp);
 }
 
+static inline void free_block(void * bp){
+    size_t size = GET_SIZE(HDRP(bp));
+    PUT(HDRP(bp), PACK(size, 0));
+    PUT(FTRP(bp), PACK(size, 0));
+    coalesce(bp);
+}
 
 /* coalesce empty block and add to chain, the empty block is not in the empty block chain. */
 static void *coalesce(void *bp)
@@ -317,11 +431,38 @@ static void *coalesce(void *bp)
 
 static void *extend_heap(size_t words)
 {
-    PRINTF("extend heap\n");
+    PRINTF("extend heap: ");
+    char* bp, *penult_bp;
+    size_t size;
+
+    size = (words%2) ? (words+1)*WSIZE : words*WSIZE;
+
+    penult_bp = (char *)mem_heap_hi() + 1 - DSIZE;
+    if(!GET_ALLOC(penult_bp)) size = MAX((size-GET_SIZE(penult_bp)), CHUNKSIZE);
+    //if(!GET_ALLOC(penult_bp)) size = size - GET_SIZE(penult_bp);
+
+    if ((long)(bp = mem_sbrk(size)) == -1)
+        return NULL;
+
+    PUT(HDRP(bp), PACK(size, 0));
+    PUT(FTRP(bp), PACK(size, 0));
+    PUT(HDRP(NEXT_BLKP(bp)), PACK(0, 1));
+    bp = coalesce(bp);
+    CHECK();
+    return bp;
+}
+
+static void *new_extend_heap(size_t words)
+{
+    PRINTF("extend heap: ");
     char* bp;
     size_t size;
 
     size = (words%2) ? (words+1)*WSIZE : words*WSIZE;
+
+    char * heap_hi = (char *)mem_heap_hi()+1;
+    if(!GET_ALLOC(heap_hi-DSIZE)) size -= GET_SIZE(heap_hi-DSIZE);
+
     if ((long)(bp = mem_sbrk(size)) == -1)
         return NULL;
 
@@ -337,12 +478,19 @@ static void *extend_heap(size_t words)
 static void *find_fit(size_t size){
     char *header = (char *)(chain_header(size));
     char *tail = (char *) (true_header) + ADDRESSLEN*WSIZE;
-    char *bp;
+    char *bp, *target_bp = NULL;
+    size_t target_size = __SIZE_MAX__, current_size;
     for(; header < tail; header+=WSIZE){
         bp = header;
         while((bp = (char *)ENEXT_BLKP(bp)) != (char *)(true_header)){
-            if (GET_SIZE(FTRP(bp))>=size) return bp;
+            current_size = GET_SIZE(FTRP(bp));
+            if (current_size>=size && current_size<target_size){
+                target_size = current_size;
+                target_bp = bp;
+                //return bp;
+            }
         }
+        if(target_bp) return target_bp;
     }
     return NULL;
 }
