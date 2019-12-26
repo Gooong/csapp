@@ -19,6 +19,8 @@
  * | end| end|g4-7|g8-15|...|        ...          |g2^32|
  * ------------------------------------------------------
  * 
+ * 
+ * 
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -160,7 +162,7 @@ void *mm_malloc(size_t size)
         if((bp = extend_heap(extendsize/WSIZE)) == NULL) return NULL;
     }
 
-    bp = place(bp, asize, size<96);
+    bp = place(bp, asize, asize < 96);
 
     CHECK();
     return bp;
@@ -243,6 +245,12 @@ void *mm_realloc(void *bp, size_t size)
         }
         // Need to find block to fit
         else{
+            /* 
+             * Magic code. 
+             * Firstly free current block as it may be coalesced to a larger block).
+             * Then find avaliable empty block (It may overlap with origin block, which is free.)
+             * Copy the content of the block, place the block and restore two words.
+             */ 
             // Save the first two words of this block and free this block.
             unsigned int data_next = (unsigned int)ENEXT_BLKP(bp);
             unsigned int data_prev = (unsigned int)EPREV_BLKP(bp);
@@ -297,10 +305,16 @@ static inline void remove_from_chain(void * bp){
     ESET_PREV_BLK(ENEXT_BLKP(bp), EPREV_BLKP(bp));
 }
 
-/* Add empty block to the chain. */
+/* Add empty block to the chain, aligned by block address. */
 static inline void add_to_chain(void * bp){
     size_t size = GET_SIZE(HDRP(bp));
-    unsigned int *headerp = chain_header(size);
+    void *headerp = chain_header(size);
+
+    while(((char *)ENEXT_BLKP(headerp) != (char *)(true_header))&&
+        ((unsigned int)ENEXT_BLKP(headerp) < (unsigned int) bp)){
+        headerp = (void *)ENEXT_BLKP(headerp);
+    }
+
     
     ESET_NEXT_BLK(bp, ENEXT_BLKP(headerp));
     ESET_PREV_BLK(bp, headerp);
@@ -380,23 +394,17 @@ static void *extend_heap(size_t words)
     return bp;
 }
 
-/* Find the empty block along the chain. */
+/* Find the first avaliable empty block along the chain. */
 static void *find_fit(size_t size){
     char *header = (char *)(chain_header(size));
     char *tail = (char *) (true_header) + ADDRESSLEN*WSIZE;
-    char *bp, *target_bp = NULL;
-    size_t target_size = __SIZE_MAX__, current_size;
+    char *bp;
+
     for(; header < tail; header+=WSIZE){
         bp = header;
         while((bp = (char *)ENEXT_BLKP(bp)) != (char *)(true_header)){
-            current_size = GET_SIZE(FTRP(bp));
-            if (current_size>=size && current_size<target_size){
-                target_size = current_size;
-                target_bp = bp;
-                return bp;
-            }
+            if (GET_SIZE(HDRP(bp))>=size) return bp;
         }
-        if(target_bp) return target_bp;
     }
     return NULL;
 }
@@ -483,10 +491,23 @@ int mm_checkheap(void){
 
 
 
+// Results for mm malloc:
+// trace  valid  util     ops      secs  Kops
+//  0       yes   99%    5694  0.000369 15427
+//  1       yes   98%    5848  0.000331 17694
+//  2       yes   99%    6648  0.000802  8292
+//  3       yes   99%    5380  0.000738  7288
+//  4       yes   98%   14400  0.000452 31873
+//  5       yes   95%    4800  0.000456 10536
+//  6       yes   93%    4800  0.000450 10667
+//  7       yes   96%   12000  0.001159 10349
+//  8       yes   89%   24000  0.001218 19713
+//  9       yes   78%   14401  0.000849 16962
+// 10       yes   49%   14401  0.000551 26136
+// Total          90%  112372  0.007374 15239
 
-
-
-
-
+// Perf index = 54 (util) + 40 (thru) = 94/100
+// correct:11
+// perfidx:94
 
 
