@@ -1,22 +1,23 @@
 #include <stdio.h>
 #include <stdlib.h>
+#include <signal.h>
 #include "csapp.h"
 #include "sbuf.h"
+#include "cache.h"
 
-/* Recommended max cache and object sizes */
-#define MAX_CACHE_SIZE 1049000
-#define MAX_OBJECT_SIZE 102400
-#define THREADS 4
-#define SBUFSIZE 16
+
+#define THREADS 8
+#define SBUFSIZE 32
+#define CACHE_NUM 10
 /* max line of request content */
 #define MAX_CONTENT 128
 
-#define DEBUG
+//#define DEBUG
 
 #ifdef DEBUG
 #define PRINTLOG(...) printf(__VA_ARGS__)
 #else
-#define PRINTLOG()
+#define PRINTLOG(...)
 #endif
 
 /* You won't lose style points for including this long line in your code */
@@ -31,6 +32,7 @@ int read_all(rio_t *rp, void *content, size_t *length);
 void proxy_error(int fd);
 
 sbuf_t sbuf;
+cache_t cache;
 
 
 int main(int argc, char * argv[])
@@ -41,6 +43,10 @@ int main(int argc, char * argv[])
     struct sockaddr_storage clientaddr;
     pthread_t tid;
 
+    // igonre SIGPIPE
+    Signal(SIGPIPE, SIG_IGN);
+    //sigaction(SIGPIPE, &(struct sigaction){SIG_IGN}, NULL);
+
     if (argc != 2){
         fprintf(stderr, "Usage: %s <port>\n", argv[0]);
         return 0;
@@ -50,6 +56,7 @@ int main(int argc, char * argv[])
     listenfd = Open_listenfd(argv[1]);
 
     sbuf_init(&sbuf, SBUFSIZE);
+    cache_init(&cache, CACHE_NUM);
     for (int i=0;i<THREADS; i++){
         Pthread_create(&tid, NULL, thread, NULL);
     }
@@ -75,14 +82,16 @@ int main(int argc, char * argv[])
         // }
     }
     
+    subf_destory(&sbuf);
+    cache_destory(&cache);
     return 0;
 }
+
 
 void *thread(void *vargp){
     Pthread_detach(pthread_self());
     while(1){
         PRINTLOG("Client connection allocated.\n");
-        PRINTLOG("%d connnections are piped.\n", (sbuf.rear-sbuf.front)%sbuf.n);
         int connfd = sbuf_remove(&sbuf);
         doit(connfd);
         close(connfd);
@@ -91,7 +100,7 @@ void *thread(void *vargp){
 }
 
 void doit(int fd){
-    char host[MAXLINE], port[MAXLINE], path[MAXLINE];
+    char host[MAXLINE], port[MAXLINE], path[MAXLINE], finger[MAXLINE];
     char request_content[MAX_CONTENT * MAXLINE], response_content[MAX_OBJECT_SIZE];
     rio_t rio, lc_rio;
     int local_client_fd;
@@ -104,18 +113,28 @@ void doit(int fd){
         proxy_error(fd);
         return;
     }
-
     PRINTLOG("Request info: %s %s %s\n", host, port, path);
-    // reuse the connection
+    sprintf(finger, "%s %s %s", host, port, path);
+    
+    // try to get the content from cache.
+    PRINTLOG("Searching cache...\n");
+    if(get_obj(&cache, finger, response_content, &total_size)>=0){
+        PRINTLOG("Cache hit!\n");
+        if(rio_writen(fd, response_content, total_size) == total_size) 
+            PRINTLOG("Finish this request by cache.\n");
+        else PRINTLOG("Error happen while writing back to client.\n");
 
+        return;
+    }
+
+    PRINTLOG("Cache miss\n");
     if((local_client_fd = open_clientfd(host, port)) <= 0){
         PRINTLOG("Open remote socket failed.\n");
         proxy_error(fd);
         return;
     }
     rio_readinitb(&lc_rio, local_client_fd);
-    PRINTLOG("Sending...\n");
-    // PRINTLOG("%s", request_content);
+    PRINTLOG("Sending Request...\n");
     if(rio_writen(local_client_fd, request_content, strlen(request_content))!=strlen(request_content)){
         proxy_error(fd);
         close(local_client_fd);
@@ -125,18 +144,26 @@ void doit(int fd){
 
     total_size = 0;
     while((n = rio_readnb(&lc_rio, response_content, MAX_OBJECT_SIZE))>0){
-        PRINTLOG("Received %.3f M.\n", n/1000.0);   
-        if (rio_writen(fd, response_content, n) < 0){
-            break;
+        PRINTLOG("Received %.3f MiB.\n", n/1024.0);   
+        if (rio_writen(fd, response_content, n) != n){
+            PRINTLOG("Error happen while writing back to client.\n");
+            close(local_client_fd);
+            return;
         }
-        PRINTLOG("Send to client %.3f M.\n", n/1000.0);   
+        PRINTLOG("Send to client %.3f MiB.\n", n/1024.0);   
         total_size += n;
+    }
+
+    if (total_size <= MAX_OBJECT_SIZE){
+        // cache this content
+        PRINTLOG("Saving cache...\n");
+        store_obj(&cache, finger, response_content, total_size);
+        PRINTLOG("Cache saved: %s\n", finger);
     }
 
     //Close(local_client_fd);
     PRINTLOG("Finished a request.\n");
 
-    close(local_client_fd);
 }
 
 
