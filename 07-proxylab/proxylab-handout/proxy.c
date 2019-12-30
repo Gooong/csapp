@@ -75,13 +75,9 @@ int main(int argc, char * argv[])
         }
         sbuf_add(&sbuf, connfd);
         PRINTLOG("Accepting connection from (%s, %s)\n", hostname, port);
-        //doit(connfd);
-
-        // if(close(connfd)<0){
-        //     PRINTLOG("Close client connection failed.\n");
-        // }
     }
     
+    // never get here.
     subf_destory(&sbuf);
     cache_destory(&cache);
     return 0;
@@ -89,7 +85,7 @@ int main(int argc, char * argv[])
 
 
 void *thread(void *vargp){
-    Pthread_detach(pthread_self());
+    pthread_detach(pthread_self());
     while(1){
         PRINTLOG("Client connection allocated.\n");
         int connfd = sbuf_remove(&sbuf);
@@ -99,6 +95,7 @@ void *thread(void *vargp){
     }
 }
 
+/* Handle client request */
 void doit(int fd){
     char host[MAXLINE], port[MAXLINE], path[MAXLINE], finger[MAXLINE];
     char request_content[MAX_CONTENT * MAXLINE], response_content[MAX_OBJECT_SIZE];
@@ -120,14 +117,13 @@ void doit(int fd){
     PRINTLOG("Searching cache...\n");
     if(get_obj(&cache, finger, response_content, &total_size)>=0){
         PRINTLOG("Cache hit!\n");
-        if(rio_writen(fd, response_content, total_size) == total_size) 
-            PRINTLOG("Finish this request by cache.\n");
-        else PRINTLOG("Error happen while writing back to client.\n");
-
+        if(rio_writen(fd, response_content, total_size) == total_size){
+            PRINTLOG("Finish this request by cache.\n");} 
+        else {PRINTLOG("Error happen while writing back to client.\n");}
         return;
     }
 
-    PRINTLOG("Cache miss\n");
+    PRINTLOG("Cache miss.\n");
     if((local_client_fd = open_clientfd(host, port)) <= 0){
         PRINTLOG("Open remote socket failed.\n");
         proxy_error(fd);
@@ -153,6 +149,7 @@ void doit(int fd){
         PRINTLOG("Send to client %.3f MiB.\n", n/1024.0);   
         total_size += n;
     }
+    close(local_client_fd);
 
     if (total_size <= MAX_OBJECT_SIZE){
         // cache this content
@@ -167,65 +164,65 @@ void doit(int fd){
 }
 
 
-void doit_multi(int fd){
-    char host[MAXLINE], port[MAXLINE], path[MAXLINE],
-     last_host[MAXLINE]="\0", last_port[MAXLINE]="\0";
-    char request_content[MAX_CONTENT * MAXLINE], response_content[MAX_OBJECT_SIZE];
-    rio_t rio, lc_rio;
-    int local_client_fd, last_local_client_fd = -1;
-    size_t n, total_size;
+// void doit_multi(int fd){
+//     char host[MAXLINE], port[MAXLINE], path[MAXLINE],
+//      last_host[MAXLINE]="\0", last_port[MAXLINE]="\0";
+//     char request_content[MAX_CONTENT * MAXLINE], response_content[MAX_OBJECT_SIZE];
+//     rio_t rio, lc_rio;
+//     int local_client_fd, last_local_client_fd = -1;
+//     size_t n, total_size;
 
-    Rio_readinitb(&rio, fd);
+//     Rio_readinitb(&rio, fd);
 
-    // read until eof.
-    while(transform_request(&rio, request_content, host, port, path) > 0){
-        // PRINTLOG("---- NEW REQUEST ----\n");
+//     // read until eof.
+//     while(transform_request(&rio, request_content, host, port, path) > 0){
+//         // PRINTLOG("---- NEW REQUEST ----\n");
 
-        PRINTLOG("Request info: %s %s %s\n", host, port, path);
+//         PRINTLOG("Request info: %s %s %s\n", host, port, path);
 
-        // reuse the connection
-        if(!strcmp(host, last_host) && !strcmp(port, last_port)){
-            PRINTLOG("Resuse Connestion %s:%s", host, port);
-            local_client_fd = last_local_client_fd;
-        }
-        else{
-            close(last_local_client_fd);
-            last_local_client_fd = local_client_fd;
-            strcpy(last_host, host);
-            strcpy(last_port, port);
-            if((local_client_fd = open_clientfd(host, port)) <= 0){
-                PRINTLOG("Open remote socket failed.\n");
-                proxy_error(fd);
-                break;
-            }
-        }
+//         // reuse the connection
+//         if(!strcmp(host, last_host) && !strcmp(port, last_port)){
+//             PRINTLOG("Resuse Connestion %s:%s", host, port);
+//             local_client_fd = last_local_client_fd;
+//         }
+//         else{
+//             close(last_local_client_fd);
+//             last_local_client_fd = local_client_fd;
+//             strcpy(last_host, host);
+//             strcpy(last_port, port);
+//             if((local_client_fd = open_clientfd(host, port)) <= 0){
+//                 PRINTLOG("Open remote socket failed.\n");
+//                 proxy_error(fd);
+//                 break;
+//             }
+//         }
 
   
-        PRINTLOG("Sending...\n");
-        // PRINTLOG("%s", request_content);
-        if(rio_writen(local_client_fd, request_content, strlen(request_content))!=strlen(request_content)){
-            proxy_error(fd);
-            break;
-        }
-        PRINTLOG("Request sent.\n");
+//         PRINTLOG("Sending...\n");
+//         // PRINTLOG("%s", request_content);
+//         if(rio_writen(local_client_fd, request_content, strlen(request_content))!=strlen(request_content)){
+//             proxy_error(fd);
+//             break;
+//         }
+//         PRINTLOG("Request sent.\n");
 
-        rio_readinitb(&lc_rio, local_client_fd);
-        total_size = 0;
-        while((n = rio_readnb(&lc_rio, response_content, MAX_OBJECT_SIZE))>0){
-            PRINTLOG("Received %zu byte(s).\n", n);   
-            if (rio_writen(fd, response_content, n) < 0){
-                break;
-            }
-            total_size += n;
-        }
+//         rio_readinitb(&lc_rio, local_client_fd);
+//         total_size = 0;
+//         while((n = rio_readnb(&lc_rio, response_content, MAX_OBJECT_SIZE))>0){
+//             PRINTLOG("Received %zu byte(s).\n", n);   
+//             if (rio_writen(fd, response_content, n) < 0){
+//                 break;
+//             }
+//             total_size += n;
+//         }
 
-        //Close(local_client_fd);
-        PRINTLOG("Finished a request.\n");
-    }
-    close(local_client_fd);
-}
+//         //Close(local_client_fd);
+//         PRINTLOG("Finished a request.\n");
+//     }
+//     close(local_client_fd);
+// }
 
-
+/* Parse and transform client requesst */
 int transform_request(rio_t *rp, char *content, char*host, char*port, char*path){
     char buf[MAXLINE], method[MAXLINE], url[MAXLINE], version[MAXLINE];
     int contain_host = 0;
@@ -247,7 +244,7 @@ int transform_request(rio_t *rp, char *content, char*host, char*port, char*path)
     content += strlen(buf);
     strcpy(content, user_agent_hdr);
     content += strlen(user_agent_hdr);
-    while(Rio_readlineb(rp, buf, MAXLINE) > 0){
+    while(rio_readlineb(rp, buf, MAXLINE) > 0){
         if (strncmp("Proxy-Connection:", buf, strlen("Proxy-Connection:")) == 0) continue;
         if (strncmp("Connection:", buf, strlen("Connection:")) == 0) continue;
         if (strncmp("Host:", buf, strlen("Host:")) == 0) contain_host = 1;
@@ -271,12 +268,12 @@ int transform_request(rio_t *rp, char *content, char*host, char*port, char*path)
     return 1;
 }
 
+
+/* Parse url to get host, port, and path. */
 void parse_url(char *url, char*host, char*port, char*path){
     char *host_start, *port_start, *path_start, buf[MAXLINE];
 
     strcpy(buf, url);
-    // remove '\r'
-    //*(buf + strlen(buf) -1) = '\0';
 
     host_start = strstr(buf, "//");
     if(host_start == NULL) host_start = buf;
@@ -305,6 +302,7 @@ void parse_url(char *url, char*host, char*port, char*path){
     return;
 }
 
+/* Sent the HTTP error to client. */
 void proxy_error(int fd){
     char buf[MAXLINE];
     sprintf(buf, "%s %s\r\n\r\n",my_version ,"502 Bad-Gateway");

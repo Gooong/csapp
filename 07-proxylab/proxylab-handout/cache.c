@@ -74,7 +74,7 @@ void store_obj(cache_t *cp, char *finger, char* content, size_t length){
     P(&cp->writable);
     //printf("1\n");
     // find least recently used block.
-    int index, time_stamp = cp->global_time;
+    int index = 0, time_stamp = cp->global_time;
     for(int i =0; i<cp->num_obj; i++){
         if(cp->valids[i]){
             if(cp->timestamps[i] <= time_stamp){
